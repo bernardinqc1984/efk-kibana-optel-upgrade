@@ -1,0 +1,283 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-app
+  namespace: observability
+  labels:
+    app: sample-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sample-app
+  template:
+    metadata:
+      labels:
+        app: sample-app
+    spec:
+      serviceAccountName: monitoring-sa
+      containers:
+      - name: sample-app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+          name: http
+        env:
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://otel-collector:4318"
+        - name: OTEL_SERVICE_NAME
+          value: "sample-nginx-app"
+        - name: OTEL_RESOURCE_ATTRIBUTES
+          value: "service.name=sample-nginx-app,service.version=1.0,deployment.environment=observability"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        - name: html-content
+          mountPath: /usr/share/nginx/html/index.html
+          subPath: index.html
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 15
+          periodSeconds: 20
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: sample-app-config
+      - name: html-content
+        configMap:
+          name: sample-app-html
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sample-app-config
+  namespace: observability
+data:
+  nginx.conf: |
+    events {
+        worker_connections 1024;
+    }
+    
+    http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+        
+        # Custom log format with structured logging
+        log_format json_combined escape=json
+        '{'
+          '"time_local":"$time_local",'
+          '"remote_addr":"$remote_addr",'
+          '"remote_user":"$remote_user",'
+          '"request":"$request",'
+          '"status": "$status",'
+          '"body_bytes_sent":"$body_bytes_sent",'
+          '"request_time":"$request_time",'
+          '"http_referrer":"$http_referer",'
+          '"http_user_agent":"$http_user_agent",'
+          '"http_x_forwarded_for":"$http_x_forwarded_for",'
+          '"service":"sample-nginx-app",'
+          '"environment":"monitoring"'
+        '}';
+        
+        access_log /var/log/nginx/access.log json_combined;
+        error_log /var/log/nginx/error.log warn;
+        
+        sendfile        on;
+        keepalive_timeout  65;
+        
+        server {
+            listen       80;
+            server_name  localhost;
+            
+            # Root location
+            location / {
+                root   /usr/share/nginx/html;
+                index  index.html index.htm;
+                
+                # Add some custom headers for tracing
+                add_header X-Service-Name "sample-nginx-app";
+                add_header X-Request-ID $request_id;
+            }
+            
+            # Health check endpoint
+            location /health {
+                access_log off;
+                return 200 "healthy\n";
+                add_header Content-Type text/plain;
+            }
+            
+            # Metrics endpoint (simple)
+            location /metrics {
+                access_log off;
+                return 200 "# Sample metrics\nsample_app_requests_total 42\nsample_app_uptime_seconds 3600\n";
+                add_header Content-Type text/plain;
+            }
+            
+            # Simulate slow endpoint
+            location /slow {
+                return 200 "This was slow!\n";
+                add_header Content-Type text/plain;
+            }
+            
+            # Simulate error endpoint
+            location /error {
+                return 500 "Simulated error for testing\n";
+                add_header Content-Type text/plain;
+            }
+            
+            # Error pages
+            error_page   500 502 503 504  /50x.html;
+            location = /50x.html {
+                root   /usr/share/nginx/html;
+            }
+        }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sample-app-html
+  namespace: observability
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Sample Monitoring App</title>
+        <style>
+            body { 
+                font-family: Arial, sans-serif; 
+                max-width: 800px; 
+                margin: 0 auto; 
+                padding: 20px;
+                background-color: #f5f5f5;
+            }
+            .container { 
+                background: white; 
+                padding: 30px; 
+                border-radius: 10px; 
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }
+            h1 { color: #333; }
+            .endpoint {
+                background: #f0f0f0;
+                padding: 10px;
+                margin: 10px 0;
+                border-radius: 5px;
+                border-left: 4px solid #007acc;
+            }
+            .endpoint a {
+                color: #007acc;
+                text-decoration: none;
+                font-weight: bold;
+            }
+            .endpoint a:hover {
+                text-decoration: underline;
+            }
+            .description {
+                color: #666;
+                font-size: 14px;
+                margin-top: 5px;
+            }
+            .status {
+                background: #e7f5e7;
+                border-left-color: #28a745;
+                color: #155724;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1> Sample Monitoring Application</h1>
+            <p>This is a sample application for demonstrating the Kubernetes monitoring stack with ElasticSearch, Fluentd, Jaeger, and OpenTelemetry.</p>
+            
+            <div class="endpoint status">
+                <strong>Status:</strong> Application is running and generating logs! 
+                <div class="description">This page generates access logs that are collected by Fluentd and stored in ElasticSearch.</div>
+            </div>
+            
+            <h2> Available Endpoints:</h2>
+            
+            <div class="endpoint">
+                <a href="/health"> /health</a>
+                <div class="description">Health check endpoint - returns 200 OK</div>
+            </div>
+            
+            <div class="endpoint">
+                <a href="/metrics"> /metrics</a>
+                <div class="description">Simple metrics endpoint - returns basic metrics</div>
+            </div>
+            
+            <div class="endpoint">
+                <a href="/slow"> /slow</a>
+                <div class="description">Slow endpoint - takes 2 seconds to respond (for testing latency)</div>
+            </div>
+            
+            <div class="endpoint">
+                <a href="/error"> /error</a>
+                <div class="description">Error endpoint - returns 500 error (for testing error logging)</div>
+            </div>
+
+            <h2> Monitoring Tools:</h2>
+            <p>Access the monitoring tools using port-forwarding:</p>
+            <ul>
+                <li><strong>ElasticSearch:</strong> <code>kubectl port-forward svc/elasticsearch 9200:9200 -n monitoring</code></li>
+                <li><strong>Kibana UI:</strong> <code>kubectl port-forward svc/kibana 5601:5601 -n monitoring</code></li>
+                <li><strong>Jaeger UI:</strong> <code>kubectl port-forward svc/jaeger-query 16686:16686 -n monitoring</code></li>
+                <li><strong>OpenTelemetry:</strong> <code>kubectl port-forward svc/otel-collector 8888:8888 -n monitoring</code></li>
+            </ul>
+
+            <h2> What's Being Monitored:</h2>
+            <ul>
+                <li> <strong>Logs:</strong> All HTTP requests, errors, and application logs</li>
+                <li> <strong>Metrics:</strong> Request count, response times, error rates</li>
+                <li> <strong>Traces:</strong> Request flow through the system</li>
+            </ul>
+            
+            <p><em>Last updated: <span id="timestamp"></span></em></p>
+            
+            <script>
+                document.getElementById('timestamp').textContent = new Date().toLocaleString();
+                
+                // Generate some activity for demo purposes
+                setInterval(() => {
+                    fetch('/health').catch(() => {});
+                }, 30000);
+            </script>
+        </div>
+    </body>
+    </html>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-app
+  namespace: observability
+  labels:
+    app: sample-app
+spec:
+  selector:
+    app: sample-app
+  ports:
+  - port: 8080
+    targetPort: 80
+    name: http
+  type: ClusterIP

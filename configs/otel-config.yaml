@@ -1,0 +1,92 @@
+# OpenTelemetry Collector Configuration
+# This configuration sets up the collector to receive, process, and export telemetry data
+
+receivers:
+  # OTLP receiver for traces, metrics, and logs
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  
+  # Prometheus receiver for scraping metrics
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: 'otel-collector'
+          scrape_interval: 10s
+          static_configs:
+            - targets: ['0.0.0.0:8888']
+  
+  # Kubernetes cluster receiver
+  k8s_cluster:
+    auth_type: serviceAccount
+    node: ${K8S_NODE_NAME}
+    
+  # Kubelet stats receiver
+  kubeletstats:
+    collection_interval: 20s
+    auth_type: "serviceAccount"
+    endpoint: "https://${K8S_NODE_IP}:10250"
+    insecure_skip_verify: true
+
+processors:
+  # Batch processor for better performance
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+  
+  # Memory limiter to prevent OOM
+  memory_limiter:
+    limit_mib: 512
+  
+  # Resource processor to add cluster metadata
+  resource:
+    attributes:
+      - key: cluster.name
+        value: "monitoring-cluster"
+        action: upsert
+
+exporters:
+  # Jaeger exporter for traces
+  jaeger:
+    endpoint: jaeger-collector:14250
+    tls:
+      insecure: true
+  
+  # Prometheus exporter for metrics
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    
+  # Debug logging
+  logging:
+    loglevel: debug
+
+extensions:
+  # Health check endpoint
+  health_check:
+    endpoint: 0.0.0.0:13133
+  
+  # Performance profiling
+  pprof:
+    endpoint: 0.0.0.0:1777
+  
+  # zPages for diagnostics
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, pprof, zpages]
+  pipelines:
+    # Traces pipeline
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [jaeger, logging]
+    
+    # Metrics pipeline
+    metrics:
+      receivers: [otlp, prometheus, k8s_cluster, kubeletstats]
+      processors: [memory_limiter, resource, batch]
+      exporters: [prometheus, logging]

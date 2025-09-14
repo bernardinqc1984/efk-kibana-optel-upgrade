@@ -1,0 +1,196 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: observability
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+      
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: 'otel-collector'
+              scrape_interval: 10s
+              static_configs:
+                - targets: ['0.0.0.0:8888']
+      
+      k8s_cluster:
+        auth_type: serviceAccount
+        
+      kubeletstats:
+        collection_interval: 20s
+        auth_type: "serviceAccount"
+        endpoint: "https://${K8S_NODE_IP}:10250"
+        insecure_skip_verify: true
+
+    processors:
+      batch:
+        timeout: 1s
+        send_batch_size: 1024
+      
+      memory_limiter:
+        limit_mib: 512
+        check_interval: 1s
+      
+      resource:
+        attributes:
+          - key: cluster.name
+            value: "observability-cluster"
+            action: upsert
+
+    exporters:
+      otlp:
+        endpoint: jaeger-collector:14250
+        tls:
+          insecure: true
+      
+      prometheus:
+        endpoint: "0.0.0.0:8889"
+        
+      logging:
+        loglevel: debug
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+      
+      pprof:
+        endpoint: 0.0.0.0:1777
+      
+      zpages:
+        endpoint: 0.0.0.0:55679
+
+    service:
+      extensions: [health_check, pprof, zpages]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [otlp, logging]
+        
+        metrics:
+          receivers: [otlp, prometheus, k8s_cluster, kubeletstats]
+          processors: [memory_limiter, resource, batch]
+          exporters: [prometheus, logging]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels:
+    app: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      serviceAccountName: monitoring-sa
+      containers:
+      - name: otel-collector
+        image: otel/opentelemetry-collector-contrib:0.88.0
+        command:
+        - "/otelcol-contrib"
+        - "--config=/etc/otel-collector-config/config.yaml"
+        ports:
+        - containerPort: 1777   # pprof extension
+          name: pprof
+        - containerPort: 4317   # OTLP gRPC receiver
+          name: otlp-grpc
+        - containerPort: 4318   # OTLP HTTP receiver
+          name: otlp-http
+        - containerPort: 8888   # Prometheus metrics exposed by the collector
+          name: metrics
+        - containerPort: 8889   # Prometheus exporter metrics
+          name: prometheus
+        - containerPort: 13133  # health_check extension
+          name: health-check
+        - containerPort: 55679  # zpages extension
+          name: zpages
+        env:
+        - name: K8S_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: K8S_NODE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.hostIP
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 200m
+            memory: 256Mi
+        volumeMounts:
+        - name: otel-collector-config-vol
+          mountPath: /etc/otel-collector-config
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 13133
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 13133
+          initialDelaySeconds: 5
+          periodSeconds: 10
+      volumes:
+      - name: otel-collector-config-vol
+        configMap:
+          name: otel-collector-config
+          items:
+          - key: config.yaml
+            path: config.yaml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels:
+    app: otel-collector
+spec:
+  selector:
+    app: otel-collector
+  ports:
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+    protocol: TCP
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+    protocol: TCP
+  - name: metrics
+    port: 8888
+    targetPort: 8888
+    protocol: TCP
+  - name: prometheus
+    port: 8889
+    targetPort: 8889
+    protocol: TCP
+  - name: health-check
+    port: 13133
+    targetPort: 13133
+    protocol: TCP
+  - name: zpages
+    port: 55679
+    targetPort: 55679
+    protocol: TCP
+  type: ClusterIP

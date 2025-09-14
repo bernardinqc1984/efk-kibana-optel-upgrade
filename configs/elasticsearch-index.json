@@ -1,0 +1,78 @@
+{
+  "index_patterns": ["fluentd-*"],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "index.refresh_interval": "5s",
+      "index.codec": "best_compression"
+    },
+    "mappings": {
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "kubernetes": {
+          "properties": {
+            "namespace_name": {
+              "type": "keyword"
+            },
+            "pod_name": {
+              "type": "keyword"
+            },
+            "container_name": {
+              "type": "keyword"
+            },
+            "host": {
+              "type": "keyword"
+            },
+            "labels": {
+              "properties": {
+                "app": {
+                  "type": "keyword"
+                },
+                "version": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        },
+        "log": {
+          "type": "text",
+          "analyzer": "standard"
+        },
+        "stream": {
+          "type": "keyword"
+        },
+        "time": {
+          "type": "date"
+        },
+        "tag": {
+          "type": "keyword"
+        },
+        "cluster_name": {
+          "type": "keyword"
+        },
+        "level": {
+          "type": "keyword"
+        },
+        "message": {
+          "type": "text",
+          "analyzer": "standard"
+        },
+        "service": {
+          "type": "keyword"
+        },
+        "environment": {
+          "type": "keyword"
+        }
+      }
+    }
+  },
+  "priority": 100,
+  "version": 1,
+  "_meta": {
+    "description": "Template for Fluentd log indices in monitoring cluster"
+  }
+}

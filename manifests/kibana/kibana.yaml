@@ -1,0 +1,138 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kibana-config
+  namespace: observability
+data:
+  kibana.yml: |
+    server.name: kibana
+    server.host: "0.0.0.0"
+    server.port: 5601
+    elasticsearch.hosts: ["http://elasticsearch:9200"]
+    elasticsearch.username: "kibana_system"
+    elasticsearch.password: "kibana_password"
+    
+    # Enable security and force authentication
+    xpack.security.enabled: true
+    xpack.encryptedSavedObjects.encryptionKey: "min-32-byte-long-strong-encryption-key"
+    xpack.reporting.encryptionKey: "min-32-byte-long-strong-encryption-key"
+    xpack.security.encryptionKey: "min-32-byte-long-strong-encryption-key"
+    
+    # Configure ONLY basic authentication
+    xpack.security.authc.providers:
+      basic.basic1:
+        order: 0
+        enabled: true
+    
+    # Explicitly disable anonymous access
+    xpack.security.authc.anonymous.enabled: false
+    
+    # Session configuration
+    xpack.security.session.idleTimeout: "1h"
+    xpack.security.session.lifespan: "30d"
+    xpack.security.cookieName: "sid"
+    
+    # Security headers
+    server.securityResponseHeaders.disableEmbedding: false
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kibana-auth
+  namespace: observability
+type: Opaque
+data:
+  # Default credentials: admin / monitoring123
+  username: YWRtaW4=  # admin
+  password: bW9uaXRvcmluZzEyMw==  # monitoring123
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kibana
+  namespace: observability
+  labels:
+    app: kibana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kibana
+  template:
+    metadata:
+      labels:
+        app: kibana
+    spec:
+      serviceAccountName: monitoring-sa
+      containers:
+      - name: kibana
+        image: docker.elastic.co/kibana/kibana:8.5.1
+        ports:
+        - containerPort: 5601
+          name: ui
+        env:
+        - name: ELASTICSEARCH_HOSTS
+          value: "http://elasticsearch:9200"
+        - name: ELASTICSEARCH_USERNAME
+          value: "kibana_system"
+        - name: ELASTICSEARCH_PASSWORD
+          value: "kibana_password"
+        - name: SERVER_NAME
+          value: "kibana"
+        - name: SERVER_HOST
+          value: "0.0.0.0"
+        - name: XPACK_SECURITY_ENABLED
+          value: "true"
+        - name: XPACK_SECURITY_AUTHC_ANONYMOUS_ENABLED
+          value: "false"
+        - name: XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY
+          value: "min-32-byte-long-strong-encryption-key"
+        - name: XPACK_REPORTING_ENCRYPTIONKEY
+          value: "min-32-byte-long-strong-encryption-key"
+        - name: XPACK_SECURITY_ENCRYPTIONKEY
+          value: "min-32-byte-long-strong-encryption-key"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /usr/share/kibana/config/kibana.yml
+          subPath: kibana.yml
+        readinessProbe:
+          httpGet:
+            path: /api/status
+            port: 5601
+          initialDelaySeconds: 60
+          timeoutSeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /api/status
+            port: 5601
+          initialDelaySeconds: 120
+          timeoutSeconds: 10
+          periodSeconds: 30
+      volumes:
+      - name: config-volume
+        configMap:
+          name: kibana-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kibana
+  namespace: observability
+  labels:
+    app: kibana
+spec:
+  selector:
+    app: kibana
+  ports:
+  - port: 5601
+    targetPort: 5601
+    name: ui
+  type: ClusterIP
